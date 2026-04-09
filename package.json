@@ -1,0 +1,12 @@
+{
+  "name": "cantu-agent-openai",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Executivo Comercial Cantu - OpenAI",
+  "scripts": {
+    "dev": "vercel dev"
+  },
+  "dependencies": {
+    "openai": "^4.47.0"
+  }
+}
