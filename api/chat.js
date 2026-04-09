@@ -1,6 +1,6 @@
-import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 
-const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const GITHUB_RAW = "https://raw.githubusercontent.com/julianocominetti/cantu-agent/main/data";
 
 const cache = {};
@@ -16,14 +16,17 @@ async function getData(filename) {
 function detectarArquivos(pergunta) {
   const p = pergunta.toLowerCase();
   const arquivos = new Set();
+
   if (p.includes('filial') || p.includes('ranking') || p.includes('loja') || p.includes('unidade') || p.includes('resumo geral')) arquivos.add('filial.txt');
   if (p.includes('segment')) arquivos.add('segmento.txt');
   if (p.includes('categ') || p.includes('produto')) arquivos.add('categoria.txt');
   if (p.includes('client') || p.includes('top') || p.includes('churn') || p.includes('concentra')) arquivos.add('cliente.txt');
   if (p.includes('vendedor') || p.includes('representant') || p.includes('meta')) arquivos.add('vendedor.txt');
   if (p.includes('execut') || p.includes('completo') || p.includes('geral')) {
-    arquivos.add('filial.txt'); arquivos.add('segmento.txt');
-    arquivos.add('categoria.txt'); arquivos.add('cliente.txt');
+    arquivos.add('filial.txt');
+    arquivos.add('segmento.txt');
+    arquivos.add('categoria.txt');
+    arquivos.add('cliente.txt');
   }
   if (arquivos.size === 0) arquivos.add('filial.txt');
   return [...arquivos];
@@ -31,24 +34,76 @@ function detectarArquivos(pergunta) {
 
 const SYSTEM_PROMPT = `Você é o Executivo Comercial Cantu, assistente de análise de vendas do Grupo Cantu. Responda sempre em português, com linguagem executiva e objetiva.
 
-ANO DOS DADOS: 2026. Sempre use 2026 nas respostas.
+ANO DOS DADOS: 2026. Sempre use 2026 nas respostas. Nunca mencione 2024 ou 2025.
 
-ESTRUTURA DOS DADOS:
-1. filial.txt — FILIAL | Jan_FAT | Jan_MRG | Jan_META | ... | TOTAL_FAT | MELHOR_MES | MELHOR_MES_FAT
-   "Celso Ramos / Cristal Verde" já estão somados.
-2. segmento.txt — SEGMENTO | Jan_FAT | Jan_MRG | ... | TOTAL_FAT
-3. categoria.txt — CODFILIAL | CATEGORIA | CATEGORIA2 | SEGMENTO | Jan_FAT | ... | TOTAL_FAT | MARGEM_MEDIA
-4. cliente.txt — CODFILIAL | CLIENTE | CODVENDEDOR | SEGMENTO | Jan_FAT | ... | TOTAL_FAT | MARGEM_MEDIA
-5. vendedor.txt — CODFILIAL | CODVENDEDOR | VENDEDOR | Jan_FAT | Jan_META | ... | TOTAL_FAT | TOTAL_META
+ESTRUTURA DOS DADOS DISPONÍVEIS:
+
+1. filial.txt — Faturamento e margem mensal por filial
+   Colunas: FILIAL | Jan_FAT | Jan_MRG | Jan_META | Fev_FAT | Fev_MRG | Fev_META | ... | TOTAL_FAT | MELHOR_MES | MELHOR_MES_FAT
+   IMPORTANTE: "Celso Ramos / Cristal Verde" já estão somados como uma única filial.
+
+2. segmento.txt — Faturamento e margem por segmento
+   Colunas: SEGMENTO | Jan_FAT | Jan_MRG | Fev_FAT | Fev_MRG | ... | TOTAL_FAT
+
+3. categoria.txt — Top 12 categorias por filial
+   Colunas: CODFILIAL | CATEGORIA | CATEGORIA2 | SEGMENTO | Jan_FAT | Fev_FAT | Mar_FAT | Abr_FAT | TOTAL_FAT | MARGEM_MEDIA
+
+4. cliente.txt — Top 12 clientes por filial
+   Colunas: CODFILIAL | CLIENTE | CODVENDEDOR | SEGMENTO | Jan_FAT | Fev_FAT | Mar_FAT | Abr_FAT | TOTAL_FAT | MARGEM_MEDIA
+   - O campo CLIENTE contém o nome do cliente — sempre exiba-o nas análises
+   - O campo CODVENDEDOR vincula o cliente ao vendedor no arquivo vendedor.txt
+   - Para saber o nome do vendedor de um cliente: localize o CODVENDEDOR no cliente.txt e busque o mesmo CODVENDEDOR + CODFILIAL no vendedor.txt
+
+5. vendedor.txt — Faturamento e meta por vendedor
+   Colunas: CODFILIAL | CODVENDEDOR | VENDEDOR | Jan_FAT | Jan_META | Fev_FAT | Fev_META | ... | TOTAL_FAT | TOTAL_META
+   - O campo VENDEDOR contém o nome do vendedor — sempre exiba-o nas análises
+   - Para listar clientes de um vendedor: filtre cliente.txt pelo CODVENDEDOR do vendedor
+
+REGRAS DE FORMATAÇÃO:
+- Faturamento: R$ com separador de milhar (ex: R$ 14,8M ou R$ 980k)
+- Margem: percentual com 2 casas decimais (ex: 25,33%)
+- Sempre indique o período analisado
+- Destaque o insight principal no início
 
 RANKING DE FILIAIS — formato obrigatório:
-| FILIAL | Jan | Fev | Mar | Abr | TOTAL |
-Ordene pelo TOTAL decrescente. SEM variação percentual. SEM outras colunas.
+Exiba UMA tabela com colunas: FILIAL | Jan | Fev | Mar | Abr | TOTAL
+- Use os valores de Jan_FAT, Fev_FAT, Mar_FAT, Abr_FAT e TOTAL_FAT
+- Ordene pelo TOTAL decrescente
+- NÃO inclua variação percentual, margem ou outras colunas
+- NÃO quebre em múltiplas tabelas
+- "Celso Ramos / Cristal Verde" já está somado — use o valor diretamente
 
-ANÁLISE DE CLIENTES E CATEGORIAS: limite Top 12, ordene por TOTAL decrescente.
+ANÁLISE DE CLIENTES:
+- Sempre exiba o nome do CLIENTE (não o código)
+- Exiba: CLIENTE | VENDEDOR | Jan | Fev | Mar | Abr | TOTAL | MARGEM
+- Para obter o VENDEDOR: cruze CODVENDEDOR do cliente.txt com vendedor.txt
+- Ordene pelo TOTAL decrescente, limite Top 12
 
-Formate: Faturamento em R$ (ex: R$ 14,8M), Margem em % (ex: 25,33%).
-Sempre indique o período. Destaque o insight principal no início.`;
+ANÁLISE DE CATEGORIAS:
+- Exiba: CATEGORIA | Jan | Fev | Mar | Abr | TOTAL | MARGEM
+- Ordene pelo TOTAL decrescente, limite Top 12
+
+ANÁLISE DE VENDEDORES:
+- Sempre exiba o nome do VENDEDOR (não o código)
+- Exiba: VENDEDOR | Jan | Fev | Mar | Abr | TOTAL | META | % META
+- Calcule % META = TOTAL_FAT / TOTAL_META * 100
+- Ordene pelo TOTAL decrescente
+- Para listar clientes de um vendedor: filtre cliente.txt pelo mesmo CODVENDEDOR
+
+MENU DE ANÁLISES DISPONÍVEIS:
+- RANKING DE FILIAIS: faturamento mensal e acumulado
+- ANÁLISE DE SEGMENTOS: FLV Nacionais, FLV Importados, Orgânicos, Industrializados
+- TOP CATEGORIAS: por filial ou geral
+- TOP CLIENTES: por filial ou geral
+- ANÁLISE DE VENDEDORES: faturamento vs meta
+- ANÁLISE EXECUTIVA COMPLETA: filiais + clientes + categorias
+
+Formato padrão de resposta:
+1. Período analisado
+2. Insight principal (1 linha)
+3. Tabela com dados
+4. Observações e alertas
+5. Sugestão de próxima análise`;
 
 const ACCESS_PASSWORD = process.env.ACCESS_PASSWORD;
 
@@ -79,16 +134,20 @@ export default async function handler(req, res) {
       arquivos.map(async (f) => `=== ${f} ===\n${await getData(f)}`)
     );
 
-    const response = await client.chat.completions.create({
-      model: "gpt-4o-mini",
+    const systemWithData = `${SYSTEM_PROMPT}\n\n${dados.join("\n\n")}`;
+
+    const response = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
       max_tokens: 4096,
-      messages: [
-        { role: "system", content: `${SYSTEM_PROMPT}\n\n${dados.join("\n\n")}` },
-        ...historico
-      ],
+      system: systemWithData,
+      messages: historico,
     });
 
-    const text = response.choices[0]?.message?.content || "";
+    const text = response.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+
     res.status(200).json({ response: text });
   } catch (err) {
     console.error(err);
